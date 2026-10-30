@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Earth Destroyer</title>
+<style>
+:root{
+  --bg:#07090c;--pn:#12161c;--pn2:#1a2029;--bd:#2a313c;
+  --fg:#e8ecf2;--mut:#8b93a0;--ac:#f2a900;--acf:#171000;
+  --ok:#4ab36b;--bad:#e0443a;color-scheme:dark;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0}
+body{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:auto minmax(0,1fr) auto auto auto;
+  grid-template-areas:"hud" "cv" "sub" "tools" "ctl";
+  background:var(--bg);color:var(--fg);
+  font:14px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  overflow:hidden;overscroll-behavior:none;
+  padding-left:env(safe-area-inset-left,0);padding-right:env(safe-area-inset-right,0);
+}
+#hud{grid-area:hud;display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--pn);border-bottom:1px solid var(--bd)}
+#hud b{font-size:12px;font-weight:800;letter-spacing:.12em;color:var(--ac);white-space:nowrap}
+#fb{flex:1;height:10px;border-radius:5px;background:var(--pn2);border:1px solid var(--bd);overflow:hidden}
+#fb i{display:block;height:100%;width:100%;border-radius:5px;background:linear-gradient(90deg,var(--ok),var(--ac) 55%,var(--bad));transform-origin:left;transform:scaleX(1)}
+#fv{min-width:130px;text-align:right;font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;font-variant-numeric:tabular-nums}
+#sub{grid-area:sub;padding:8px 14px;background:var(--pn);color:var(--mut);font-size:12px;min-height:34px;border-top:1px solid var(--bd);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+canvas{grid-area:cv;display:block;width:100%;height:100%;min-width:0;min-height:0;object-fit:contain;background:#02040a;cursor:crosshair}
+#tools{grid-area:tools;display:flex;align-items:center;gap:8px;padding:10px 14px;background:var(--pn);border-top:1px solid var(--bd);overflow-x:auto;scrollbar-width:none}
+#tools::-webkit-scrollbar{display:none}
+#tools::before{content:attr(data-l);flex:none;margin-right:4px;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--mut)}
+#tools button{flex:none;border:1px solid var(--bd);background:var(--pn2);color:var(--fg);border-radius:999px;padding:9px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:transform .08s,background .15s}
+#tools button:active{transform:scale(.95)}
+#tools button.sel{background:var(--ac);color:var(--acf);border-color:var(--ac)}
+#ctl{grid-area:ctl;display:flex;gap:10px;padding:12px 14px;background:var(--pn);border-top:1px solid var(--bd)}
+#ctl button{flex:1;min-height:52px;border:1px solid var(--bd);border-radius:14px;background:var(--pn2);color:var(--fg);font-size:14px;font-weight:700;letter-spacing:.03em}
+#ctl button.pri{background:linear-gradient(#f7b92a,#e29a00);color:var(--acf);border-color:#c98900}
+@media (min-aspect-ratio:1/1){
+  body{grid-template-columns:minmax(280px,340px) minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr) auto;grid-template-areas:"hud cv" "sub cv" "tools cv" "ctl cv"}
+  #sub{white-space:normal;border-top:0}
+  #tools{flex-wrap:wrap;overflow-x:hidden}
+  #tools::before{flex-basis:100%;margin:0 0 4px}
+  canvas{border-left:1px solid var(--bd)}
+}
+@media (max-height:480px){
+  #hud{padding:6px 12px}#sub{padding:5px 12px;min-height:26px}
+  #tools{padding:7px 12px}#ctl{padding:8px 12px}#ctl button{min-height:42px}
+  #tools button{padding:7px 11px;font-size:12px}
+}
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>EARTH DESTROYER</b>
+  <div id="fb"><i id="bar"></i></div>
+  <span id="fv">100% · 0 kN</span>
+</div>
+<div id="sub">Select a tool, then click / hold on the Earth. Watch the physics.</div>
+<canvas id="c" width="640" height="640"></canvas>
+<div id="tools" data-l="Tools"></div>
+<div id="ctl">
+  <button id="rs">RESET EARTH</button>
+  <button id="mu">🔊</button>
+  <button id="help" class="pri">?</button>
+</div>
+
+<script>
+const cv=document.getElementById('c'),cx=cv.getContext('2d');
+const W=640,H=640,CX=W/2,CY=H/2;
+const sp=document.createElement('canvas');sp.width=W;sp.height=H;const sx=sp.getContext('2d');
+
+// --- materials (adapted from press sim) ---
+const M={
+  crust:{k:.88,ten:.028,cmp:.05,yl:9,fl:0,du:1,sm:1,rho:2.7,mu:.55,rr:.42},
+  mantle:{k:.45,ten:.35,yl:.08,fl:.14,jc:.4,sm:0,rho:4.5,mu:.35,rr:.45},
+  ocore:{k:.35,ten:.9,yl:.06,fl:.18,jc:.6,sm:0,rho:10,mu:.25,rr:.46},
+  icore:{k:.92,ten:2.2,yl:9,fl:.04,sm:1,rho:13,mu:.4,rr:.44,ys:.15},
+  stone:{k:.9,ten:.03,cmp:.05,yl:9,fl:0,du:1,sm:1,rho:2.4,mu:.5,rr:.42},
+  metal:{k:.7,ten:.5,cmp:.4,yl:.07,fl:.25,sm:.8,rho:7.8,mu:.35,rr:.43,ys:.1},
+  iron:{k:.95,ten:.04,cmp:.06,yl:9,fl:0,sm:1,rho:7.8,mu:.4,rr:.42},
+  tnt:{k:.55,ten:.1,yl:.04,fl:.08,du:1,rho:1.6,mu:.3,rr:.42}
+};
+for(const k in M){M[k].cmp=M[k].cmp||9;M[k].rr=M[k].rr||.42}
+
+let P=[],S=[],B=[],D=[],F=0,shake=0,lastT=0,muted=false,dirty=0,tick=0,IT=0,CN=0;
+const CA=new Float64Array(60000*8);
+const G=0; // radial gravity handled separately
+let earthBody=null,integrity=1,maxMass=1,tool='meteor',toolHold=0,bh=null,laserOn=0,quakeT=0;
+let blast=null,fpsAvg=60,noteT=0;
+
+// --- Earth construction ---
+function buildEarth(){
+  P=[];S=[];B=[];D=[];sx.clearRect(0,0,W,H);blast=null;bh=null;F=0;integrity=1;
+  const R=200, s=9.0; // particle spacing (balanced for performance)
+  const layers=[
+    {r:200, mat:'crust', col:[22,38,40]},
+    {r:172, mat:'mantle',col:[14,52,36]},
+    {r:88,  mat:'ocore', col:[28,72,45]},
+    {r:42,  mat:'icore', col:[32,38,52]}
+  ];
+  const ps=[];
+  for(let y=-R-s;y<=R+s;y+=s)for(let x=-R-s;x<=R+s;x+=s){
+    const d=Math.hypot(x,y);
+    if(d>R+s*0.6)continue;
+    let mat='crust',hue=25,sat=35,li=42;
+    for(const L of layers)if(d<=L.r){mat=L.mat;hue=L.col[0];sat=L.col[1];li=L.col[2];break}
+    // slight noise for visual
+    li+=Math.random()*8-4;
+    if(mat==='crust'&&d>195&&Math.random()<.12){sat=20;li=55} // polar ice-ish
+    if(mat==='crust'&&Math.random()<.04){hue=120;sat=30;li=28} // vegetation patches
+    const m=M[mat];
+    const p={
+      x:CX+x,y:CY+y,ox:CX+x,oy:CY+y,
+      r:s*(m.rr||.42),s,rx:x,ry:y,m,
+      w:42/(m.rho*s*s),pk:0,bn:0,g:0,
+      col:`hsl(${hue},${sat}%,${li}%)`,
+      layer:mat
+    };
+    ps.push(p);
+  }
+  // springs (neighbor only)
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++){
+    const a=ps[i],b=ps[j],d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(d<s*1.48){
+      const mat=a.m.ten<b.m.ten?a.m:b.m;
+      S.push({a,b,L:d,L0:d,m:mat,dead:0});
+    }
+  }
+  P=ps;
+  const body={ps,h0:R*2,name:'Earth',g:0};
+  B=[body];earthBody=body;
+  maxMass=P.length;
+  rebuild();
+  document.getElementById('sub').textContent='Earth assembled · '+P.length+' particles · pick a tool and click';
+}
+
+// --- audio ---
+let ac,nb,master,hum,humG;
+function initAudio(){
+  if(ac)return;
+  try{
+    ac=new (window.AudioContext||window.webkitAudioContext)();
+    master=ac.createGain();master.gain.value=muted?0:.7;master.connect(ac.destination);
+    nb=ac.createBuffer(1,ac.sampleRate/2,ac.sampleRate);
+    const d=nb.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+    hum=ac.createOscillator();hum.type='sawtooth';hum.frequency.value=38;
+    const lp=ac.createBiquadFilter();lp.frequency.value=160;
+    humG=ac.createGain();humG.gain.value=0;
+    hum.connect(lp);lp.connect(humG);humG.connect(master);hum.start();
+  }catch(e){ac=null}
+}
+let lastSnd=0;
+function snd(m,vol=1){
+  if(!ac||ac.state==='closed')return;
+  const n=performance.now();if(n-lastSnd<28)return;lastSnd=n;
+  const s=ac.createBufferSource();s.buffer=nb;
+  const f=ac.createBiquadFilter();f.type='bandpass';
+  f.frequency.value=m.gl?3200+Math.random()*2800:m.du?600+Math.random()*500:m.jc?280+Math.random()*220:1100;
+  f.Q.value=1.4;
+  const g=ac.createGain();
+  g.gain.setValueAtTime((m.gl?.22:.32)*vol,ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+(m.jc?.2:.1));
+  s.connect(f);f.connect(g);g.connect(master);s.start(0,Math.random()*.25,.18);
+}
+function boomSnd(){
+  if(!ac||!nb)return;
+  const s=ac.createBufferSource();s.buffer=nb;
+  const f=ac.createBiquadFilter();f.type='lowpass';f.frequency.value=180;
+  const g=ac.createGain();g.gain.setValueAtTime(1.5,ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(.001,ac.currentTime+1.1);
+  s.connect(f);f.connect(g);g.connect(master);s.start(0,0,.7);
+}
+
+// --- core physics helpers ---
+function brk(a,b,m){
+  const x=(a.x+b.x)/2,y=(a.y+b.y)/2,r=Math.random;
+  if(D.length<520){
+    if(m.jc&&r()<.55)D.push({x,y,vx:(r()-.5)*280,vy:(r()-.5)*280,col:a.col,sz:1.6+r()*2.8,life:3.5});
+    if(m.du&&r()<.65)D.push({x,y,vx:(r()-.5)*110,vy:(r()-.5)*110,dust:1,sz:2.2+r()*3.5,life:1.2+r()});
+    if(m.gl&&r()<.4)D.push({x,y,vx:(r()-.5)*340,vy:(r()-.5)*340,col:'#dff6ff',sz:1+r()*1.6,life:3.5});
+  }
+  snd(m);shake=Math.min(7,shake+(m.k>.6?.55:.18));
+}
+
+function rebuild(){
+  const n=P.length;
+  for(let i=0;i<n;i++){const p=P[i];p.nb=[];p.cid=-1}
+  for(const q of S){if(q.dead||!q.a.m.sm!==!q.b.m.sm)continue;q.a.nb.push(q.b);q.b.nb.push(q.a)}
+  let nc=0;const st=[];
+  for(let i=0;i<n;i++){
+    const p=P[i];if(p.cid>=0)continue;
+    p.cid=nc;st.push(p);
+    while(st.length){const u=st.pop();for(const v of u.nb)if(v.cid<0){v.cid=nc;st.push(v)}}
+    nc++;
+  }
+  CN=nc;
+}
+
+function shape(first){
+  const n=P.length;CA.fill(0,0,CN*8);
+  for(let i=0;i<n;i++){
+    const p=P[i];if(!p.m.sm)continue;
+    const k=p.cid*8,m=1/p.w;
+    CA[k]+=m;CA[k+1]+=m*p.x;CA[k+2]+=m*p.y;CA[k+3]+=m*p.rx;CA[k+4]+=m*p.ry;
+  }
+  for(let i=0;i<n;i++){
+    const p=P[i];if(!p.m.sm)continue;
+    const k=p.cid*8,t0=CA[k],m=1/p.w;
+    const ux=p.x-CA[k+1]/t0,uy=p.y-CA[k+2]/t0;
+    const wx=p.rx-CA[k+3]/t0,wy=p.ry-CA[k+4]/t0;
+    CA[k+5]+=m*(wx*ux+wy*uy);CA[k+6]+=m*(wx*uy-wy*ux);
+  }
+  for(let c=0;c<CN;c++)CA[c*8+7]=Math.atan2(CA[c*8+6],CA[c*8+5]);
+  for(let i=0;i<n;i++){
+    const p=P[i];if(!p.m.sm)continue;
+    const k=p.cid*8,t0=CA[k],th=CA[k+7],c=Math.cos(th),s=Math.sin(th);
+    const cx0=CA[k+1]/t0,cy0=CA[k+2]/t0;
+    const wx=p.rx-CA[k+3]/t0,wy=p.ry-CA[k+4]/t0;
+    if(first&&p.m.fl&&p.m.ys){
+      const ux=p.x-cx0,uy=p.y-cy0;
+      const dx=c*ux+s*uy-wx,dy=-s*ux+c*uy-wy,ys=p.m.ys*p.s;
+      if(dx*dx+dy*dy>ys*ys){p.rx+=dx*p.m.fl*.22;p.ry+=dy*p.m.fl*.22}
+    }
+    const gx=cx0+c*wx-s*wy,gy=cy0+s*wx+c*wy;
+    p.x+=(gx-p.x)*p.m.sm;p.y+=(gy-p.y)*p.m.sm;
+  }
+}
+
+const CS=14,GC=Math.ceil(W/CS)+3,GR=Math.ceil(H/CS)+3;
+const head=new Int32Array(GC*GR),nxt=new Int32Array(60000);
+const cl=(v,a,b)=>v<a?a:v>b?b:v;
+
+function collide(){
+  head.fill(-1);shape(IT===0);const n=P.length;
+  for(let i=0;i<n;i++){
+    const p=P[i];
+    const g=cl(p.y/CS|0,0,GR-1)*GC+cl(p.x/CS|0,0,GC-1);
+    nxt[i]=head[g];head[g]=i;
+  }
+  for(let i=0;i<n;i++){
+    const p=P[i],cx0=cl(p.x/CS|0,0,GC-1),cy0=cl(p.y/CS|0,0,GR-1);
+    for(let gy=Math.max(0,cy0-1);gy<=Math.min(GR-1,cy0+1);gy++)
+      for(let gx=Math.max(0,cx0-1);gx<=Math.min(GC-1,cx0+1);gx++)
+        for(let j=head[gy*GC+gx];j>=0;j=nxt[j]){
+          if(j<=i)continue;
+          const q=P[j],dx=q.x-p.x,dy=q.y-p.y,d2=dx*dx+dy*dy,md=p.r+q.r;
+          if(d2<md*md&&d2>1e-8){
+            const d=Math.sqrt(d2),f=(md-d)/d,t=p.w+q.w;
+            const fp=f*p.w/t,fq=f*q.w/t;
+            p.x-=dx*fp;p.y-=dy*fp;q.x+=dx*fq;q.y+=dy*fq;
+          }
+        }
+  }
+}
+
+let Csum=0;
+function step(h){
+  // radial gravity toward original center (weakens as mass is lost)
+  const gStr=920*integrity;
+  for(const p of P){
+    const dx=CX-p.x,dy=CY-p.y,d=Math.hypot(dx,dy)||1;
+    const ax=dx/d*gStr,ay=dy/d*gStr;
+    const vx=(p.x-p.ox)*.997,vy=(p.y-p.oy)*.997;
+    p.ox=p.x;p.oy=p.y;
+    p.x+=vx+ax*h*h;p.y+=vy+ay*h*h;
+    p.pk*=.72;p.bn-=h;
+  }
+
+  // black hole attractor
+  if(bh){
+    bh.t-=h;
+    for(const p of P){
+      const dx=bh.x-p.x,dy=bh.y-p.y,d=Math.hypot(dx,dy)||1;
+      if(d<bh.r){
+        const f=(1-d/bh.r)*bh.str*h;
+        p.x+=dx/d*f;p.y+=dy/d*f;
+        if(d<18){p.x=bh.x+(Math.random()-.5)*4;p.y=bh.y+(Math.random()-.5)*4}
+      }
+    }
+    if(bh.t<=0)bh=null;
+  }
+
+  // laser continuous damage
+  if(laserOn&&tool==='laser'){
+    const mx=laserOn.x,my=laserOn.y;
+    for(const p of P){
+      if(Math.hypot(p.x-mx,p.y-my)<16){
+        p.pk=1;
+        // weaken nearby springs
+        for(const q of S)if(!q.dead&&(q.a===p||q.b===p)&&Math.random()<.08){
+          q.dead=1;dirty=1;brk(q.a,q.b,q.m);
+        }
+      }
+    }
+  }
+
+  if(quakeT>0){
+    quakeT-=h;
+    shake=Math.max(shake,3+quakeT*4);
+    if(Math.random()<.15){
+      for(const q of S)if(!q.dead&&Math.random()<.004){q.dead=1;dirty=1;brk(q.a,q.b,q.m)}
+    }
+  }
+
+  if(dirty&&++tick%3===0){rebuild();dirty=0}
+  if(humG)humG.gain.value=Math.min(.06,F/14000+(bh?.04:0)+(laserOn?.03:0));
+
+  for(let it=0;it<3;it++){
+    IT=it;
+    for(let rep=0;rep<2;rep++)for(const q of S){
+      if(q.dead)continue;
+      const a=q.a,b=q.b;
+      let dx=b.x-a.x,dy=b.y-a.y,d=Math.hypot(dx,dy)||1e-6;
+      if(it===0&&rep===0){
+        const e=(d-q.L)/q.L,m=q.m;
+        const pf=(a.pk>.25||b.pk>.25)?.28:1;
+        if((e>m.ten*pf||e<-m.cmp*pf)){
+          q.dead=1;dirty=1;brk(a,b,m);continue;
+        }
+        if(!m.sm&&Math.abs(e)>m.yl&&m.fl){
+          q.L=Math.max(q.L0*.28,q.L+(d-q.L)*m.fl);
+        }
+      }
+      if(q.a.m.sm&&q.b.m.sm)continue;
+      const f=(d-q.L)/d*q.m.k,t=a.w+b.w,fa=f*a.w/t,fb=f*b.w/t;
+      a.x+=dx*fa;a.y+=dy*fa;b.x-=dx*fb;b.y-=dy*fb;
+    }
+    collide();
+    // soft bounds (keep pieces on screen a while)
+    for(const p of P){
+      const r=p.r;
+      if(p.x<r){p.x=r;p.ox=p.x+(p.x-p.ox)*.4}
+      else if(p.x>W-r){p.x=W-r;p.ox=p.x+(p.x-p.ox)*.4}
+      if(p.y<r){p.y=r;p.oy=p.y+(p.y-p.oy)*.4}
+      else if(p.y>H-r){p.y=H-r;p.oy=p.y+(p.y-p.oy)*.4}
+    }
+  }
+  if(S.some(q=>q.dead))S=S.filter(q=>!q.dead);
+  // force estimate from broken bonds + kinetic
+  Csum=0;
+  for(const p of P){
+    const vx=p.x-p.ox,vy=p.y-p.oy;
+    Csum+=Math.hypot(vx,vy)*p.m.k*.4;
+  }
+}
+
+function explode(x,y,power=1){
+  blast={x,y,t:0,pow:power};
+  shake=Math.min(14,8+power*4);dirty=1;
+  boomSnd();
+  const rad=90+power*70;
+  for(const q of S)if(!q.dead){
+    const mx=(q.a.x+q.b.x)/2,my=(q.a.y+q.b.y)/2;
+    if(Math.hypot(mx-x,my-y)<rad*1.1)q.dead=1;
+  }
+  for(const p of P){
+    const dx=p.x-x,dy=p.y-y,d=Math.hypot(dx,dy)||1;
+    const f=1-d/(rad*1.4);if(f<=0)continue;
+    const v=Math.min(3200,3400*f*f*power+400),ux=dx/d,uy=dy/d;
+    p.ox=p.x-ux*v/360;p.oy=p.y-uy*v/360;p.bn=4;p.pk=1;
+  }
+  for(let i=0;i<70+power*40&&D.length<600;i++){
+    const a=Math.random()*6.28,v=120+Math.random()*480*power;
+    D.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,col:i%3?'#ffcf40':'#ff6a20',sz:1.4+Math.random()*3,life:1+Math.random()});
+  }
+}
+
+function spawnMeteor(x,y,size=1){
+  const s=6.5,R=18+size*14,ps=[];
+  for(let yy=-R;yy<=R;yy+=s)for(let xx=-R;xx<=R;xx+=s){
+    if(xx*xx+yy*yy>R*R)continue;
+    const m=M.stone;
+    const p={x:x+xx,y:y+yy,ox:x+xx,oy:y+yy,r:s*m.rr,s,rx:xx,ry:yy,m,
+      w:38/(m.rho*s*s),pk:0,bn:0,g:0,col:`hsl(20,12%,${38+Math.random()*12}%)`,layer:'meteor'};
+    ps.push(p);
+  }
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++){
+    const a=ps[i],b=ps[j],d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(d<s*1.5)S.push({a,b,L:d,L0:d,m:a.m,dead:0});
+  }
+  // give impact velocity toward Earth center
+  const dx=CX-x,dy=CY-y,d=Math.hypot(dx,dy)||1;
+  const spd=900+size*500;
+  for(const p of ps){p.ox=p.x-dx/d*spd/360;p.oy=p.y-dy/d*spd/360}
+  P.push(...ps);B.push({ps,name:'Meteor'});rebuild();
+  initAudio();snd(M.stone,.6);
+}
+
+function spawnKinetic(x,y){
+  const s=5.5,R=11,ps=[];
+  for(let yy=-R;yy<=R;yy+=s)for(let xx=-R;xx<=R;xx+=s){
+    if(xx*xx+yy*yy>R*R)continue;
+    const m=M.metal;
+    const p={x:x+xx,y:y+yy,ox:x+xx,oy:y+yy,r:s*m.rr,s,rx:xx,ry:yy,m,
+      w:40/(m.rho*s*s),pk:0,bn:0,g:0,col:`hsl(210,12%,${45+Math.random()*10}%)`,layer:'rod'};
+    ps.push(p);
+  }
+  for(let i=0;i<ps.length;i++)for(let j=i+1;j<ps.length;j++){
+    const a=ps[i],b=ps[j],d=Math.hypot(a.x-b.x,a.y-b.y);
+    if(d<s*1.5)S.push({a,b,L:d,L0:d,m:a.m,dead:0});
+  }
+  const dx=CX-x,dy=CY-y,d=Math.hypot(dx,dy)||1,spd=2200;
+  for(const p of ps){p.ox=p.x-dx/d*spd/360;p.oy=p.y-dy/d*spd/360}
+  P.push(...ps);B.push({ps,name:'Kinetic'});rebuild();
+}
+
+// --- tools ---
+const TOOLS={
+  meteor:{n:'Meteor',e:'☄️',desc:'Click to drop a dense asteroid toward Earth'},
+  nuke:{n:'Nuke',e:'☢️',desc:'Click to detonate a nuclear blast'},
+  kinetic:{n:'Rod',e:'🚀',desc:'Click to fire a hypervelocity kinetic rod'},
+  laser:{n:'Laser',e:'🔴',desc:'Hold to continuous-beam surface ablation'},
+  blackhole:{n:'Black Hole',e:'🕳️',desc:'Click to spawn a temporary gravitational singularity'},
+  quake:{n:'Quake',e:'🌋',desc:'Click to trigger a massive seismic event'},
+  drill:{n:'Drill',e:'🔩',desc:'Hold near surface to bore and fracture'}
+};
+
+const toolsEl=document.getElementById('tools');
+for(const k in TOOLS){
+  const b=document.createElement('button');
+  b.textContent=TOOLS[k].e+' '+TOOLS[k].n;
+  b.dataset.k=k;
+  b.onclick=()=>{tool=k;for(const c of toolsEl.children)c.classList.toggle('sel',c.dataset.k===k);document.getElementById('sub').textContent=TOOLS[k].desc};
+  toolsEl.appendChild(b);
+}
+toolsEl.querySelector('[data-k=meteor]').classList.add('sel');
+
+function cpos(e){
+  const r=cv.getBoundingClientRect(),sc=Math.min(r.width/W,r.height/H);
+  const ox=r.left+(r.width-W*sc)/2,oy=r.top+(r.height-H*sc)/2;
+  return{x:(e.clientX-ox)/sc,y:(e.clientY-oy)/sc};
+}
+
+cv.addEventListener('pointerdown',e=>{
+  initAudio();if(ac&&ac.state==='suspended')ac.resume();
+  e.preventDefault();cv.setPointerCapture(e.pointerId);
+  const p=cpos(e);toolHold=1;
+  if(tool==='meteor')spawnMeteor(p.x,p.y,0.7+Math.random()*0.6);
+  else if(tool==='nuke')explode(p.x,p.y,1.1+Math.random()*0.5);
+  else if(tool==='kinetic')spawnKinetic(p.x,p.y);
+  else if(tool==='laser')laserOn={x:p.x,y:p.y};
+  else if(tool==='blackhole'){bh={x:p.x,y:p.y,r:110,str:420,t:4.5};shake=4}
+  else if(tool==='quake'){quakeT=2.8;shake=6;document.getElementById('sub').textContent='Seismic waves ripping through the mantle…'}
+  else if(tool==='drill')laserOn={x:p.x,y:p.y,drill:1};
+});
+cv.addEventListener('pointermove',e=>{
+  if(!toolHold)return;
+  const p=cpos(e);
+  if(tool==='laser'||tool==='drill')laserOn={x:p.x,y:p.y,drill:tool==='drill'};
+});
+const endTool=()=>{toolHold=0;laserOn=0};
+cv.addEventListener('pointerup',endTool);cv.addEventListener('pointercancel',endTool);
+
+// drill: extra fracture along path
+function drillTick(){
+  if(!laserOn||!laserOn.drill)return;
+  const mx=laserOn.x,my=laserOn.y;
+  for(const q of S)if(!q.dead){
+    const mx2=(q.a.x+q.b.x)/2,my2=(q.a.y+q.b.y)/2;
+    if(Math.hypot(mx2-mx,my2-my)<14&&Math.random()<.12){
+      q.dead=1;dirty=1;brk(q.a,q.b,q.m);
+    }
+  }
+}
+
+// --- update / draw ---
+function upd(dt){
+  let acc=0,n=0;acc+=Math.min(dt,.033);
+  while(acc>=1/240&&n<10){step(1/240);acc-=1/240;n++;if(laserOn&&laserOn.drill)drillTick()}
+  F=F*.82+Csum*5.5*.18;
+  integrity=Math.max(0.02,P.length/maxMass);
+
+  for(let i=D.length-1;i>=0;i--){
+    const d=D[i];d.life-=dt;
+    if(d.dust){d.x+=d.vx*dt;d.y+=d.vy*dt;d.sz+=dt*5}
+    else{d.x+=d.vx*dt;d.y+=d.vy*dt;d.vx*=.99;d.vy*=.99}
+    if(d.life<=0||d.x<-20||d.x>W+20||d.y<-20||d.y>H+20)D.splice(i,1);
+  }
+  shake*=.88;
+  if(blast){blast.t+=dt;if(blast.t>.7)blast=null}
+  noteT-=dt;
+}
+
+function drawStars(){
+  // static starfield (drawn once onto offscreen? simple each frame for now)
+  cx.fillStyle='#02040a';cx.fillRect(0,0,W,H);
+  cx.fillStyle='#ffffff';
+  // deterministic-ish stars
+  for(let i=0;i<120;i++){
+    const x=((i*97)%W),y=((i*53)%H),a=.15+((i*17)%10)*.04;
+    cx.globalAlpha=a;cx.fillRect(x,y,1+(i%3===0),1+(i%5===0));
+  }
+  cx.globalAlpha=1;
+}
+
+function draw(){
+  const sh=shake>.04?[(Math.random()-.5)*shake*1.2,(Math.random()-.5)*shake*1.2]:[0,0];
+  cx.setTransform(1,0,0,1,0,0);cx.clearRect(0,0,W,H);
+  drawStars();
+  cx.translate(sh[0],sh[1]);
+
+  // faint original Earth outline
+  cx.beginPath();cx.arc(CX,CY,212,0,7);
+  cx.strokeStyle='rgba(80,120,180,.12)';cx.lineWidth=2;cx.stroke();
+
+  // particles
+  cx.fillStyle='#0008';
+  for(const p of P){cx.beginPath();cx.arc(p.x,p.y,p.r*1.25,0,7);cx.fill()}
+  // springs (subtle)
+  cx.lineCap='round';
+  for(const q of S){
+    if(q.dead||q.L0>q.a.s*1.3)continue;
+    cx.strokeStyle=q.a.col;cx.globalAlpha=.55;cx.lineWidth=q.a.r*1.9;
+    cx.beginPath();cx.moveTo(q.a.x,q.a.y);cx.lineTo(q.b.x,q.b.y);cx.stroke();
+  }
+  cx.globalAlpha=1;
+  for(const p of P){cx.fillStyle=p.col;cx.beginPath();cx.arc(p.x,p.y,p.r*1.1,0,7);cx.fill()}
+
+  // debris
+  for(const d of D){
+    if(d.dust){cx.fillStyle=`rgba(180,170,150,${Math.max(0,d.life)*.4})`;cx.beginPath();cx.arc(d.x,d.y,d.sz,0,7);cx.fill()}
+    else{cx.fillStyle=d.col;cx.beginPath();cx.arc(d.x,d.y,d.sz,0,7);cx.fill()}
+  }
+
+  // black hole visual
+  if(bh){
+    const k=Math.min(1,bh.t/4.5);
+    const g=cx.createRadialGradient(bh.x,bh.y,2,bh.x,bh.y,bh.r);
+    g.addColorStop(0,`rgba(0,0,0,${.95*k})`);
+    g.addColorStop(.35,`rgba(40,0,60,${.5*k})`);
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    cx.fillStyle=g;cx.beginPath();cx.arc(bh.x,bh.y,bh.r,0,7);cx.fill();
+  }
+
+  // blast
+  if(blast){
+    const k=blast.t/.7,rad=30+k*220*blast.pow;
+    const g=cx.createRadialGradient(blast.x,blast.y,0,blast.x,blast.y,rad);
+    g.addColorStop(0,`rgba(255,245,180,${.85*(1-k)})`);
+    g.addColorStop(.4,`rgba(255,120,30,${.45*(1-k)})`);
+    g.addColorStop(1,'rgba(255,40,0,0)');
+    cx.fillStyle=g;cx.fillRect(0,0,W,H);
+  }
+
+  // laser beam
+  if(laserOn&&tool==='laser'){
+    cx.strokeStyle='rgba(255,40,40,.85)';cx.lineWidth=3;
+    cx.beginPath();cx.moveTo(laserOn.x,laserOn.y-18);cx.lineTo(laserOn.x,laserOn.y+18);cx.stroke();
+    cx.strokeStyle='rgba(255,180,180,.5)';cx.lineWidth=8;
+    cx.beginPath();cx.arc(laserOn.x,laserOn.y,12,0,7);cx.stroke();
+  }
+  if(laserOn&&laserOn.drill){
+    cx.strokeStyle='rgba(200,200,220,.7)';cx.lineWidth=2;
+    cx.beginPath();cx.arc(laserOn.x,laserOn.y,10,0,7);cx.stroke();
+  }
+
+  cx.setTransform(1,0,0,1,0,0);
+}
+
+function hud(){
+  const pct=Math.round(integrity*100);
+  document.getElementById('fv').textContent=pct+'% · '+Math.round(F)+' kN · '+Math.round(fpsAvg)+' fps';
+  document.getElementById('bar').style.transform=`scaleX(${integrity})`;
+  if(noteT<=0&&P.length<maxMass*0.15&&integrity>0.02){
+    document.getElementById('sub').textContent='Earth is critically fragmented…';
+  }
+}
+
+function fpsM(dt){
+  if(dt>.4)return;
+  fpsAvg+=(1/dt-fpsAvg)*.06;
+}
+
+function loop(t){
+  const fdt=(t-lastT)/1000||.016;lastT=t;
+  fpsM(fdt);upd(fdt);draw();hud();
+  requestAnimationFrame(loop);
+}
+
+document.getElementById('rs').onclick=()=>{buildEarth()};
+document.getElementById('mu').onclick=e=>{
+  muted=!muted;e.target.textContent=muted?'🔇':'🔊';
+  if(master)master.gain.value=muted?0:.7;
+};
+document.getElementById('help').onclick=()=>{
+  document.getElementById('sub').textContent='Tools apply real material failure: crust shatters, mantle flows, core yields. Click / hold.';
+};
+
+buildEarth();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
